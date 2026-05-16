@@ -73,7 +73,7 @@ function json(obj, extraHeaders = {}, status = 200) {
 
 async function gemini(env, prompt, image, responseSchema) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured on worker');
-  const model = env.GEMINI_MODEL || 'gemini-2.0-flash';
+  const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
   const url = `${GEMINI_BASE}/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
   const parts = [{ text: prompt }];
