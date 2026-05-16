@@ -1,6 +1,5 @@
 <script>
   import { identifyCover, lookupDiscogs } from '$lib/api.js';
-  import { threshold } from '$lib/store.js';
   import { saveScan } from '$lib/db.js';
 
   /** @type {(scan: any) => void} */
@@ -13,7 +12,8 @@
   let manualArtist = '';
   let manualTitle = '';
 
-  let fileInput;
+  let cameraInput;   // input with capture="environment" — opens camera
+  let libraryInput;  // input without capture — opens photo library / file picker
 
   async function handlePhoto(event) {
     const file = event.target.files?.[0];
@@ -21,16 +21,16 @@
     error = '';
     try {
       status = 'identifying';
-      const guess = await identifyCover(file);
-      if (!guess.artist || !guess.title) {
-        throw new Error('Could not read artist/title from the cover. Try a clearer shot or use manual entry.');
+      const clues = await identifyCover(file);
+      if (!clues.artist || !clues.title) {
+        throw new Error('Could not read artist/title from the image. Try a clearer shot or use manual entry.');
       }
-      await runLookup({ artist: guess.artist, title: guess.title, catalogNumber: guess.catalog_number });
+      await runLookup(clues);
     } catch (e) {
       status = 'error';
       error = e.message || String(e);
     } finally {
-      event.target.value = ''; // allow re-selecting the same file
+      event.target.value = '';
     }
   }
 
@@ -50,20 +50,15 @@
     }
   }
 
-  async function runLookup({ artist, title, catalogNumber }) {
+  async function runLookup(clues) {
     status = 'looking-up';
-    const result = await lookupDiscogs({ artist, title, catalogNumber });
-
-    const max = Number(result.maxPrice ?? 0);
-    const flagged = max >= $threshold;
+    const result = await lookupDiscogs(clues);
     const scan = {
-      artist: result.artist || artist,
-      title: result.title || title,
-      bestRelease: result.bestRelease ?? null,
+      artist: result.artist || clues.artist,
+      title: result.title || clues.title,
+      clues,
       allReleases: result.allReleases ?? [],
-      maxPrice: max,
-      medianPrice: Number(result.medianPrice ?? 0),
-      flagged,
+      likelyMatchId: result.likelyMatchId ?? null,
       matrix: '',
       scannedAt: Date.now()
     };
@@ -74,24 +69,38 @@
 </script>
 
 <div class="card col">
-  <div class="row">
-    <strong>Scan a record</strong>
-    <span class="muted" style="margin-left: auto;">Threshold ${$threshold.toFixed(2)}</span>
-  </div>
+  <strong>Scan a record</strong>
 
   <input
-    bind:this={fileInput}
+    bind:this={cameraInput}
     type="file"
     accept="image/*"
     capture="environment"
     on:change={handlePhoto}
     style="display: none;"
   />
-  <button type="button" class="primary" style="width: 100%;" on:click={() => fileInput?.click()}>
-    Snap cover photo
-  </button>
+  <input
+    bind:this={libraryInput}
+    type="file"
+    accept="image/*"
+    on:change={handlePhoto}
+    style="display: none;"
+  />
 
-  <div class="muted" style="text-align: center;">— or —</div>
+  <div class="row" style="gap: 8px;">
+    <button type="button" class="primary" on:click={() => cameraInput?.click()} style="flex: 1;">
+      Take photo
+    </button>
+    <button type="button" on:click={() => libraryInput?.click()} style="flex: 1;">
+      Pick from library
+    </button>
+  </div>
+
+  <p class="muted" style="margin: 4px 0;">
+    Cover, back, spine, or a label close-up — all work. A label shot helps identify the exact pressing.
+  </p>
+
+  <div class="muted" style="text-align: center; margin: 4px 0;">— or —</div>
 
   <div class="col">
     <input placeholder="Artist" bind:value={manualArtist} autocomplete="off" />
@@ -100,7 +109,7 @@
   </div>
 
   {#if status === 'identifying'}
-    <p class="muted">Reading cover…</p>
+    <p class="muted">Reading image…</p>
   {:else if status === 'looking-up'}
     <p class="muted">Checking Discogs…</p>
   {/if}

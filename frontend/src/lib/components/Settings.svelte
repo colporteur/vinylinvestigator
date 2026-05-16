@@ -1,15 +1,6 @@
 <script>
-  import { threshold } from '$lib/store.js';
+  import { defaultCondition, CONDITION_OPTIONS } from '$lib/store.js';
   import { clearScans } from '$lib/db.js';
-
-  let value = $threshold;
-
-  function save() {
-    const n = parseFloat(value);
-    if (Number.isFinite(n) && n >= 0) {
-      threshold.set(n);
-    }
-  }
 
   async function nuke() {
     if (!confirm('Delete ALL scan history? Cannot be undone.')) return;
@@ -22,18 +13,16 @@
   <strong>Settings</strong>
 
   <label class="col" style="gap: 4px;">
-    <span class="muted">Investigate threshold (USD)</span>
-    <div class="row">
-      <input
-        type="number"
-        step="0.01"
-        min="0"
-        bind:value
-        on:blur={save}
-        on:change={save}
-        style="max-width: 140px;"
-      />
-      <span class="muted">Records whose top pressing meets or exceeds this get flagged.</span>
+    <span class="muted">Default condition (used until you change it on a card)</span>
+    <div class="row" style="gap: 4px; flex-wrap: wrap;">
+      {#each CONDITION_OPTIONS as c}
+        <button
+          type="button"
+          on:click={() => defaultCondition.set(c)}
+          class:primary={$defaultCondition === c}
+          style="padding: 6px 12px; min-height: 36px;"
+        >{c}</button>
+      {/each}
     </div>
   </label>
 

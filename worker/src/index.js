@@ -2,16 +2,38 @@
 // so that secrets never reach the browser.
 //
 // Endpoints:
-//   POST /identify   { image: { mimeType, data } } -> { artist, title, catalog_number?, label?, confidence }
-//   POST /lookup     { artist, title, catalogNumber? } -> { bestRelease, allReleases, maxPrice, medianPrice }
+//   POST /identify   { image: { mimeType, data } } ->
+//                      { artist, title, catalog_number?, label?, year?,
+//                        country?, label_variant_notes?, confidence }
+//
+//   POST /lookup     { artist, title, catalog_number?, year?, country?,
+//                      label?, label_variant_notes? } ->
+//                      { artist, title, allReleases, likelyMatchId? }
+//
+//   POST /live       { releaseId } ->
+//                      { lowestPrice, numForSale, currency }
+//
 //   POST /matrix     { image: { mimeType, data } } -> { text }
 //   GET  /healthz    -> "ok"
+//
+// Pricing model: /lookup fetches /marketplace/price_suggestions for each release
+// (algorithmic, condition-segmented). /live fetches /marketplace/stats on demand
+// (actual current lowest-for-sale + listing count).
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DISCOGS_BASE = 'https://api.discogs.com';
-const DISCOGS_UA = 'VinylInvestigator/0.1 (+https://github.com/)';
-// How many search results to enrich with marketplace stats. Each adds one Discogs call.
+const DISCOGS_UA = 'VinylInvestigator/0.2 (+https://github.com/)';
 const MAX_RELEASES_TO_PRICE = 8;
+
+// Discogs canonical condition labels we care about, in display order.
+const CONDITIONS = [
+  { label: 'Mint (M)', key: 'M' },
+  { label: 'Near Mint (NM or M-)', key: 'NM' },
+  { label: 'Very Good Plus (VG+)', key: 'VG+' },
+  { label: 'Very Good (VG)', key: 'VG' },
+  { label: 'Good Plus (G+)', key: 'G+' },
+  { label: 'Good (G)', key: 'G' }
+];
 
 export default {
   async fetch(request, env) {
@@ -24,20 +46,19 @@ export default {
     }
 
     try {
-      if (url.pathname === '/healthz') {
-        return json({ ok: true }, corsHeaders);
-      }
+      if (url.pathname === '/healthz') return json({ ok: true }, corsHeaders);
+
       if (url.pathname === '/identify' && request.method === 'POST') {
-        const body = await request.json();
-        return json(await identify(body, env), corsHeaders);
+        return json(await identify(await request.json(), env), corsHeaders);
       }
       if (url.pathname === '/lookup' && request.method === 'POST') {
-        const body = await request.json();
-        return json(await lookup(body, env), corsHeaders);
+        return json(await lookup(await request.json(), env), corsHeaders);
+      }
+      if (url.pathname === '/live' && request.method === 'POST') {
+        return json(await live(await request.json(), env), corsHeaders);
       }
       if (url.pathname === '/matrix' && request.method === 'POST') {
-        const body = await request.json();
-        return json(await matrix(body, env), corsHeaders);
+        return json(await matrix(await request.json(), env), corsHeaders);
       }
       return new Response('Not found', { status: 404, headers: corsHeaders });
     } catch (err) {
@@ -47,7 +68,7 @@ export default {
   }
 };
 
-// --- CORS -------------------------------------------------------------------
+// --- CORS / JSON ------------------------------------------------------------
 
 function buildCorsHeaders(origin, env) {
   const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -114,10 +135,22 @@ function safeJsonParse(s) {
 async function identify({ image }, env) {
   if (!image?.data) throw new Error('Missing image');
   const prompt =
-    'Identify the album shown on this vinyl record cover. ' +
-    'Return ONLY the JSON object described by the schema. ' +
-    'If you cannot see a clear artist or title, leave them empty rather than guessing. ' +
-    'For catalog_number, include only if printed on the cover (spine or back) and clearly legible.';
+    'Identify the vinyl record shown in this image. The image may be a front cover, back cover, ' +
+    'record label close-up, spine, or some mix. Extract every pressing-identifying detail you can ' +
+    'clearly see. DO NOT GUESS — leave fields empty if you cannot read them confidently. ' +
+    '\n\n' +
+    'Field guidance:\n' +
+    '- catalog_number: the alphanumeric code printed near the label edge or on the spine ' +
+    '(e.g. "BSK 3010", "MS-2156"). Often the strongest pressing identifier.\n' +
+    '- year: the manufacturing or release year printed on the label or jacket. ' +
+    'Prefer label year over copyright year if both are visible.\n' +
+    '- country: country of pressing (often printed on the label, e.g. "Made in USA", ' +
+    '"Printed in West Germany").\n' +
+    '- label: record label name (e.g. "Warner Bros. Records", "Blue Note").\n' +
+    '- label_variant_notes: distinguishing label visual details (e.g. "white label promo", ' +
+    '"red Columbia 360 Sound label", "burbank palm-trees label", "rim text says STEREO"). ' +
+    'These help match to specific pressing variants on Discogs.\n' +
+    '- source: "cover", "label", or "both" — what type of image you analyzed.';
 
   const schema = {
     type: 'OBJECT',
@@ -125,7 +158,11 @@ async function identify({ image }, env) {
       artist: { type: 'STRING' },
       title: { type: 'STRING' },
       catalog_number: { type: 'STRING' },
+      year: { type: 'STRING' },
+      country: { type: 'STRING' },
       label: { type: 'STRING' },
+      label_variant_notes: { type: 'STRING' },
+      source: { type: 'STRING' },
       confidence: { type: 'NUMBER' }
     },
     required: ['artist', 'title']
@@ -133,12 +170,20 @@ async function identify({ image }, env) {
 
   const out = await gemini(env, prompt, image, schema);
   return {
-    artist: (out.artist || '').trim(),
-    title: (out.title || '').trim(),
-    catalog_number: (out.catalog_number || '').trim() || undefined,
-    label: (out.label || '').trim() || undefined,
+    artist: clean(out.artist),
+    title: clean(out.title),
+    catalog_number: clean(out.catalog_number) || undefined,
+    year: clean(out.year) || undefined,
+    country: clean(out.country) || undefined,
+    label: clean(out.label) || undefined,
+    label_variant_notes: clean(out.label_variant_notes) || undefined,
+    source: clean(out.source) || undefined,
     confidence: typeof out.confidence === 'number' ? out.confidence : null
   };
+}
+
+function clean(v) {
+  return typeof v === 'string' ? v.trim() : '';
 }
 
 // --- /matrix ----------------------------------------------------------------
@@ -150,7 +195,6 @@ async function matrix({ image }, env) {
     'Transcribe ALL etched or stamped text and numbers EXACTLY as they appear, ' +
     'preserving spacing, slashes, dashes, and any special marks. ' +
     'If both A and B sides are visible, label them. Return plain text only — no commentary.';
-
   const text = await gemini(env, prompt, image, null);
   return { text: (text || '').trim() };
 }
@@ -164,7 +208,6 @@ async function discogs(env, path, params = {}) {
     if (v != null && v !== '') url.searchParams.set(k, String(v));
   }
   url.searchParams.set('token', env.DISCOGS_TOKEN);
-
   const res = await fetch(url.toString(), {
     headers: { 'User-Agent': DISCOGS_UA, Accept: 'application/json' }
   });
@@ -178,83 +221,139 @@ async function discogs(env, path, params = {}) {
 
 // --- /lookup ----------------------------------------------------------------
 
-async function lookup({ artist, title, catalogNumber }, env) {
+async function lookup(clues, env) {
+  const { artist, title, catalog_number, year, country, label, label_variant_notes } = clues;
   if (!artist || !title) throw new Error('Missing artist or title');
 
-  // 1) Search releases on Discogs.
+  // 1) Search releases on Discogs. Include catno if we have one — it filters server-side.
   const search = await discogs(env, '/database/search', {
     artist,
     release_title: title,
     type: 'release',
     format: 'Vinyl',
-    catno: catalogNumber || undefined,
+    catno: catalog_number || undefined,
     per_page: 25
   });
   const results = (search.results || []).filter((r) => r.type === 'release').slice(0, MAX_RELEASES_TO_PRICE);
 
   if (results.length === 0) {
-    return { artist, title, bestRelease: null, allReleases: [], maxPrice: 0, medianPrice: 0 };
+    return { artist, title, allReleases: [], likelyMatchId: null };
   }
 
-  // 2) Enrich top N with marketplace stats. Sequential to be polite to Discogs.
+  // 2) For each release, fetch price_suggestions (condition-segmented prices).
   const enriched = [];
   for (const r of results) {
+    const base = {
+      id: r.id,
+      year: r.year || null,
+      country: r.country || null,
+      label: normalize(r.label),
+      catno: r.catno || null,
+      format: Array.isArray(r.format) ? r.format.join(', ') : r.format || null,
+      thumb: r.thumb || null,
+      prices: {}
+    };
     try {
-      const stats = await discogs(env, `/marketplace/stats/${r.id}`, { curr_abbr: 'USD' });
-      enriched.push({
-        id: r.id,
-        year: r.year || null,
-        country: r.country || null,
-        label: Array.isArray(r.label) ? r.label[0] : r.label || null,
-        catno: r.catno || null,
-        format: Array.isArray(r.format) ? r.format.join(', ') : r.format || null,
-        thumb: r.thumb || null,
-        lowestPrice: numberOrZero(stats?.lowest_price?.value),
-        numForSale: stats?.num_for_sale ?? 0,
-        median: numberOrZero(stats?.lowest_price?.value) // proxy until we add price_suggestions
-      });
+      const sug = await discogs(env, `/marketplace/price_suggestions/${r.id}`, {});
+      for (const c of CONDITIONS) {
+        const slot = sug[c.label];
+        const v = slot?.value;
+        if (Number.isFinite(Number(v))) base.prices[c.key] = Number(v);
+      }
     } catch (e) {
-      // If one fails (rate limit, network), include with zero price so caller still sees the pressing.
-      enriched.push({
-        id: r.id,
-        year: r.year || null,
-        country: r.country || null,
-        label: Array.isArray(r.label) ? r.label[0] : r.label || null,
-        catno: r.catno || null,
-        format: Array.isArray(r.format) ? r.format.join(', ') : r.format || null,
-        thumb: r.thumb || null,
-        lowestPrice: 0,
-        numForSale: 0,
-        median: 0,
-        error: e.message
-      });
+      base.priceError = e.message;
     }
+    enriched.push(base);
   }
 
-  // 3) Score pressings: highest current lowest-for-sale wins. Falls back to 0 if nothing for sale.
-  const sortedByPrice = [...enriched].sort((a, b) => (b.lowestPrice || 0) - (a.lowestPrice || 0));
-  const bestRelease = sortedByPrice[0] ?? null;
-  const prices = enriched.map((e) => e.lowestPrice).filter((n) => n > 0);
-  const maxPrice = prices.length ? Math.max(...prices) : 0;
-  const medianPrice = prices.length ? median(prices) : 0;
+  // 3) Score each release against the vision clues. Highest score wins,
+  //    but only if it exceeds a confidence floor.
+  for (const r of enriched) {
+    r.matchScore = scoreMatch(r, { catalog_number, year, country, label, label_variant_notes });
+  }
+  enriched.sort((a, b) => b.matchScore - a.matchScore);
+
+  const top = enriched[0];
+  const runnerUp = enriched[1];
+  const LIKELY_FLOOR = 40;
+  const LIKELY_GAP = 15; // top must beat second by this much to be "confident"
+  const isLikely =
+    top &&
+    top.matchScore >= LIKELY_FLOOR &&
+    (!runnerUp || top.matchScore - runnerUp.matchScore >= LIKELY_GAP);
 
   return {
     artist,
     title,
-    bestRelease,
     allReleases: enriched,
-    maxPrice,
-    medianPrice
+    likelyMatchId: isLikely ? top.id : null
   };
 }
 
-function numberOrZero(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+function normalize(label) {
+  if (!label) return null;
+  return Array.isArray(label) ? label[0] : label;
 }
 
-function median(nums) {
-  const s = [...nums].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+/**
+ * Score how well a Discogs release matches the vision-extracted clues.
+ * Catalog number is the strongest signal (effectively unique per pressing).
+ * Year/country/label compound to differentiate cosmetically-similar pressings.
+ */
+function scoreMatch(release, clues) {
+  let score = 0;
+
+  if (clues.catalog_number && release.catno) {
+    const a = normalizeCat(clues.catalog_number);
+    const b = normalizeCat(release.catno);
+    if (a === b) score += 50;
+    else if (a && b && (a.includes(b) || b.includes(a))) score += 30;
+  }
+
+  if (clues.year && release.year) {
+    const a = parseInt(clues.year, 10);
+    const b = parseInt(release.year, 10);
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      if (a === b) score += 20;
+      else if (Math.abs(a - b) === 1) score += 10; // off-by-one tolerable
+    }
+  }
+
+  if (clues.country && release.country) {
+    if (clues.country.toLowerCase() === release.country.toLowerCase()) score += 15;
+  }
+
+  if (clues.label && release.label) {
+    const a = clues.label.toLowerCase();
+    const b = String(release.label).toLowerCase();
+    if (a === b) score += 10;
+    else if (a.includes(b) || b.includes(a)) score += 5;
+  }
+
+  // Variant notes are fuzzy — give a small bonus if any keyword matches the release label.
+  if (clues.label_variant_notes && release.label) {
+    const notes = clues.label_variant_notes.toLowerCase();
+    const lab = String(release.label).toLowerCase();
+    const tokens = notes.split(/[\s,]+/).filter((t) => t.length > 3);
+    if (tokens.some((t) => lab.includes(t))) score += 5;
+  }
+
+  return score;
+}
+
+function normalizeCat(s) {
+  return String(s || '').toUpperCase().replace(/[\s\-_./]/g, '');
+}
+
+// --- /live ------------------------------------------------------------------
+
+async function live({ releaseId }, env) {
+  if (!releaseId) throw new Error('Missing releaseId');
+  const stats = await discogs(env, `/marketplace/stats/${releaseId}`, { curr_abbr: 'USD' });
+  return {
+    lowestPrice: Number(stats?.lowest_price?.value) || 0,
+    numForSale: stats?.num_for_sale ?? 0,
+    currency: stats?.lowest_price?.currency || 'USD',
+    blockedFromSale: !!stats?.blocked_from_sale
+  };
 }

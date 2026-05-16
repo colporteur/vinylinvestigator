@@ -1,30 +1,30 @@
-// Svelte stores for app-wide state. Threshold persists to localStorage.
+// Svelte stores for app-wide state. Persisted preferences live in localStorage.
 
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 
-const THRESHOLD_KEY = 'vi.threshold';
-const DEFAULT_THRESHOLD = 10;
+const CONDITION_KEY = 'vi.defaultCondition';
+const DEFAULT_CONDITION = 'VG';
+export const CONDITION_OPTIONS = ['M', 'NM', 'VG+', 'VG', 'G+', 'G'];
 
-function readThreshold() {
-  if (!browser) return DEFAULT_THRESHOLD;
-  const raw = localStorage.getItem(THRESHOLD_KEY);
-  const n = raw == null ? DEFAULT_THRESHOLD : parseFloat(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_THRESHOLD;
+function read(key, fallback) {
+  if (!browser) return fallback;
+  const raw = localStorage.getItem(key);
+  return raw == null ? fallback : raw;
 }
 
-function createThresholdStore() {
-  const { subscribe, set } = writable(readThreshold());
+function persisted(key, fallback) {
+  const { subscribe, set } = writable(read(key, fallback));
   return {
     subscribe,
     set: (v) => {
-      if (browser) localStorage.setItem(THRESHOLD_KEY, String(v));
+      if (browser) localStorage.setItem(key, String(v));
       set(v);
     }
   };
 }
 
-export const threshold = createThresholdStore();
+export const defaultCondition = persisted(CONDITION_KEY, DEFAULT_CONDITION);
 
 // Currently-active view: 'scan' | 'history' | 'settings'
 export const view = writable('scan');

@@ -22,10 +22,6 @@ async function postJson(path, body) {
   return res.json();
 }
 
-/**
- * Convert a File/Blob to a base64-encoded data URL stripped of the prefix
- * (so the Worker can pass it straight to Gemini's inlineData field).
- */
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -39,19 +35,24 @@ async function fileToBase64(file) {
   });
 }
 
-/** POST /identify — cover photo → {artist, title, catalog_number?, label?, confidence} */
+/** POST /identify — image → pressing clues. */
 export async function identifyCover(file) {
   const image = await fileToBase64(file);
   return postJson('/identify', { image });
 }
 
-/** POST /lookup — {artist, title, catalog_number?} → {bestRelease, allReleases, maxPrice, medianPrice} */
-export async function lookupDiscogs({ artist, title, catalogNumber }) {
-  return postJson('/lookup', { artist, title, catalogNumber });
+/** POST /lookup — clues → ranked pressings with condition prices. */
+export async function lookupDiscogs(clues) {
+  return postJson('/lookup', clues);
 }
 
-/** POST /matrix — dead-wax photo → {text} */
+/** POST /matrix — dead-wax photo → OCR text. */
 export async function readMatrix(file) {
   const image = await fileToBase64(file);
   return postJson('/matrix', { image });
+}
+
+/** POST /live — release_id → live for-sale stats (lowest price, num listings). */
+export async function fetchLive(releaseId) {
+  return postJson('/live', { releaseId });
 }

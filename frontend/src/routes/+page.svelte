@@ -7,15 +7,12 @@
   import Settings from '$lib/components/Settings.svelte';
 
   let recentScans = [];
-  let historyFilter = 'all'; // 'all' | 'flagged'
 
   async function refresh() {
-    recentScans = await listScans({ flaggedOnly: historyFilter === 'flagged' });
+    recentScans = await listScans();
   }
 
   onMount(refresh);
-
-  $: if (historyFilter) refresh();
 
   function onScanResult(scan) {
     // Newest scan goes on top of the list
@@ -39,15 +36,7 @@
 
 {:else if $view === 'history'}
   <div class="row" style="margin-bottom: 12px;">
-    <button
-      on:click={() => historyFilter = 'all'}
-      style:font-weight={historyFilter === 'all' ? '700' : '400'}
-    >All</button>
-    <button
-      on:click={() => historyFilter = 'flagged'}
-      style:font-weight={historyFilter === 'flagged' ? '700' : '400'}
-    >Flagged only</button>
-    <span class="muted" style="margin-left: auto;">{recentScans.length} record{recentScans.length === 1 ? '' : 's'}</span>
+    <span class="muted">{recentScans.length} record{recentScans.length === 1 ? '' : 's'} in history</span>
   </div>
 
   {#if recentScans.length === 0}
