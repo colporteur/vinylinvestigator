@@ -10,6 +10,8 @@
   let busy = false;
   let error = '';
   let fileInput;
+  let savedAt = 0; // timestamp of last save, drives "Saved ✓" indicator
+  let savedFlash = false;
 
   async function handlePhoto(event) {
     const file = event.target.files?.[0];
@@ -31,7 +33,13 @@
   async function save() {
     await updateScan(scan.id, { matrix: typed });
     onChange(typed);
+    scan.matrix = typed; // keep local prop in sync so "Saved" state reads correctly
+    savedAt = Date.now();
+    savedFlash = true;
+    setTimeout(() => { savedFlash = false; }, 2000);
   }
+
+  $: hasText = (typed || '').trim().length > 0;
 </script>
 
 <div class="card col">
@@ -57,8 +65,22 @@
     rows="3"
     placeholder="Type the matrix/runout string here…"
     bind:value={typed}
-    on:blur={save}
   ></textarea>
+
+  <button
+    type="button"
+    class="primary"
+    on:click={save}
+    disabled={!hasText}
+  >
+    {savedFlash ? 'Saved ✓' : 'Save matrix'}
+  </button>
+
+  {#if scan.matrix && !savedFlash}
+    <p class="muted" style="margin: 0; font-size: 0.85em;">
+      Saved. Tap "Show all pressings" above to compare against the matrix on each pressing.
+    </p>
+  {/if}
 
   {#if error}
     <p style="color: var(--accent-flag);">{error}</p>
