@@ -1,0 +1,4 @@
+# Copy this to .dev.vars (gitignored) for local `wrangler dev`.
+# In production, set these via `wrangler secret put`.
+DISCOGS_TOKEN=your-discogs-personal-token
+GEMINI_API_KEY=your-gemini-api-key

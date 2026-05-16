@@ -1,0 +1,15 @@
+name = "vinyl-investigator-worker"
+main = "src/index.js"
+compatibility_date = "2025-01-15"
+
+# Allowed CORS origin(s) — comma-separated. Update after you know your GitHub Pages URL.
+# Wildcard is OK during development; tighten for production.
+[vars]
+ALLOWED_ORIGINS = "http://localhost:5173,https://YOUR-GITHUB-USERNAME.github.io"
+
+# Set secrets with:
+#   wrangler secret put DISCOGS_TOKEN
+#   wrangler secret put GEMINI_API_KEY
+#
+# Optional model override (defaults to gemini-2.0-flash):
+#   wrangler secret put GEMINI_MODEL
